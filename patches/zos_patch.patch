@@ -1,0 +1,401 @@
+diff --git a/git-secrets b/git-secrets
+index 11be153..f992eb8 100755
+--- a/git-secrets
++++ b/git-secrets
+@@ -2,16 +2,6 @@
+ # Copyright 2010-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License").
+-# You may not use this file except in compliance with the License.
+-# A copy of the License is located at
+-#
+-# http://aws.amazon.com/apache2.0
+-#
+-# or in the "license" file accompanying this file. This file is distributed
+-# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+-# express or implied. See the License for the specific language governing
+-# permissions and limitations under the License.
+-
+ NONGIT_OK=1 OPTIONS_SPEC="\
+ git secrets --scan [-r|--recursive] [--cached] [--no-index] [--untracked] [<files>...]
+ git secrets --scan-history
+@@ -42,18 +32,12 @@ commit_msg_hook* commit-msg hook (internal only)
+ pre_commit_hook* pre-commit hook (internal only)
+ prepare_commit_msg_hook* prepare-commit-msg hook (internal only)"
+ 
+-# Include the git setup script. This parses and normalized CLI arguments.
+ . "$(git --exec-path)"/git-sh-setup
+ 
+ load_patterns() {
+   git config --get-all secrets.patterns
+-  # Execute each provider and use their output to build up patterns
+   git config --get-all secrets.providers | while read -r cmd; do
+-    # Only split words on '\n\t ' and strip "\r" from the output to account
+-    # for carriage returns being added on Windows systems. Note that this
+-    # trimming is done before the test to ensure that the string is not empty.
+     local result="$(export IFS=$'\n\t '; $cmd | tr -d $'\r')"
+-    # Do not add empty lines from providers as that would match everything.
+     if [ -n "${result}" ]; then
+       echo "${result}"
+     fi
+@@ -68,7 +52,6 @@ load_allowed() {
+   fi
+ }
+ 
+-# load patterns and combine them with |
+ load_combined_patterns() {
+   local patterns=$(load_patterns)
+   local combined_patterns=''
+@@ -79,13 +62,11 @@ load_combined_patterns() {
+   echo $combined_patterns
+ }
+ 
+-# Scans files or a repo using patterns.
+ scan() {
+   local files=("${@}") options=""
+   [ "${SCAN_CACHED}" == 1 ] && options+="--cached"
+   [ "${SCAN_UNTRACKED}" == 1 ] && options+=" --untracked"
+   [ "${SCAN_NO_INDEX}" == 1 ] && options+=" --no-index"
+-  # Scan using git-grep if there are no files or if git options are applied.
+   if [ ${#files[@]} -eq 0 ] || [ ! -z "${options}" ]; then
+     output=$(git_grep $options "${files[@]}")
+   else
+@@ -94,47 +75,48 @@ scan() {
+   process_output $? "${output}"
+ }
+ 
+-# Scans through history using patterns
+ scan_history() {
+-  # git log does not support multiple patterns, so we need to combine them
+   local combined_patterns=$(load_combined_patterns)
+   [ -z "${combined_patterns}" ] && return 0
+-  # Looks for differences matching the patterns, reduces the number of revisions to scan
+   local to_scan=$(git log --all -G"${combined_patterns}" --pretty=%H)
+-  # Scan through revisions with findings to normalize output
+   output=$(GREP_OPTIONS= LC_ALL=C git grep -nwHEI "${combined_patterns}" $to_scan)
+   process_output $? "${output}"
+ }
+ 
+-# Performs a git-grep, taking into account patterns and options.
+-# Note: this function returns 1 on success, 0 on error.
+ git_grep() {
+   local options="$1"; shift
+   local files=("${@}") combined_patterns=$(load_combined_patterns)
+-
+   [ -z "${combined_patterns}" ] && return 1
+   GREP_OPTIONS= LC_ALL=C git grep -nwHEI ${options} "${combined_patterns}" -- "${files[@]}"
+ }
+ 
+-# Performs a regular grep, taking into account patterns and recursion.
+-# Note: this function returns 1 on success, 0 on error.
+ regular_grep() {
+-  local files=("${@}") patterns=$(load_patterns) action='skip'
++  local patterns=$(load_patterns)
+   [ -z "${patterns}" ] && return 1
+-  [ ${RECURSIVE} -eq 1 ] && action="recurse"
+-  GREP_OPTIONS= LC_ALL=C grep -d "${action}" -nwHEI "${patterns}" "${files[@]}"
++  # Emulate -w using POSIX ERE word boundaries (z/OS grep has no -w/\b/[[:<:]])
++  # Map "-" to /dev/stdin (z/OS grep does not treat "-" as stdin)
++  # Append /dev/null to force filename:line output for single files (-H not on z/OS)
++  local files=()
++  for f in "${@}"; do
++    [ "$f" = "-" ] && files+=("/dev/stdin") || files+=("$f")
++  done
++  local pattern_args=()
++  while IFS= read -r p; do
++    [ -n "$p" ] && pattern_args+=(-e "(^|[^[:alnum:]_])(${p})([^[:alnum:]_]|$)")
++  done <<< "${patterns}"
++  if [ ${RECURSIVE} -eq 1 ]; then
++    GREP_OPTIONS= LC_ALL=C grep -r -nE "${pattern_args[@]}" "${files[@]}" /dev/null
++  else
++    GREP_OPTIONS= LC_ALL=C grep -nE "${pattern_args[@]}" "${files[@]}" /dev/null
++  fi
+ }
+ 
+-# Process the given status ($1) and output variables ($2).
+-# Takes into account allowed patterns, and if a bad match is found,
+-# prints an error message and exits 1.
+ process_output() {
+   local status="$1" output="$2"
+   local allowed=$(load_allowed)
+   case "$status" in
+     0)
+       [ -z "${allowed}" ] && echo "${output}" >&2 && return 1
+-      # Determine with a negative grep if the found matches are allowed
+       echo "${output}" | GREP_OPTIONS= LC_ALL=C grep -Ev "${allowed}" >&2 \
+         && return 1 || return 0
+       ;;
+@@ -143,8 +125,6 @@ process_output() {
+   esac
+ }
+ 
+-# Calls the given scanning function at $1, shifts, and passes to it $@.
+-# Exit 0 if success, otherwise exit 1 with error message.
+ scan_with_fn_or_die() {
+   local fn="$1"; shift
+   $fn "$@" && exit 0
+@@ -161,32 +141,27 @@ scan_with_fn_or_die() {
+   exit 1
+ }
+ 
+-# Scans a commit message, passed in the path to a file.
+ commit_msg_hook() {
+   scan_with_fn_or_die "scan" "$1"
+ }
+ 
+-# Scans all files that are about to be committed.
+ pre_commit_hook() {
+   SCAN_CACHED=1
+-  local files=() file found_match=0 rev="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+-  # Diff against HEAD if this is not the first commit in the repo.
++  local files=() file rev="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+   git rev-parse --verify HEAD >/dev/null 2>&1 && rev="HEAD"
+-  # Filter out deleted files using --diff-filter
+   while IFS= read -r file; do
+     [ -n "$file" ] && files+=("$file")
+   done <<< "$(git diff-index --diff-filter 'ACMU' --name-only --cached $rev --)"
+   scan_with_fn_or_die "scan" "${files[@]}"
+ }
+ 
+-# Determines if merging in a commit will introduce tainted history.
+ prepare_commit_msg_hook() {
+   case "$2,$3" in
+     merge,)
+-      local git_head=$(env | grep GITHEAD)  # e.g. GITHEAD_<sha>=release/1.43
+-      local sha="${git_head##*=}"           # Get just the SHA
+-      local branch=$(git symbolic-ref HEAD) # e.g. refs/heads/master
+-      local dest="${branch#refs/heads/}"    # cut out "refs/heads"
++      local git_head=$(env | grep GITHEAD)
++      local sha="${git_head##*=}"
++      local branch=$(git symbolic-ref HEAD)
++      local dest="${branch#refs/heads/}"
+       git log "${dest}".."${sha}" -p | scan_with_fn_or_die "scan" -
+       ;;
+   esac
+@@ -194,7 +169,6 @@ prepare_commit_msg_hook() {
+ 
+ install_hook() {
+   local path="$1" hook="$2" cmd="$3" dest
+-  # Determines the approriate path for a hook to be installed
+   if [ -d "${path}/hooks/${hook}.d" ]; then
+     dest="${path}/hooks/${hook}.d/git-secrets"
+   else
+@@ -205,7 +179,7 @@ install_hook() {
+   echo "#!/usr/bin/env bash" > "${dest}"
+   echo "git secrets --${cmd} -- \"\$@\"" >> "${dest}"
+   chmod +x "${dest}"
+-  say "$(tput setaf 2)✓$(tput sgr 0) Installed ${hook} hook to ${dest}"
++  echo "Installed ${hook} hook to ${dest}"
+ }
+ 
+ install_all_hooks() {
+@@ -214,7 +188,6 @@ install_all_hooks() {
+   install_hook "$1" "prepare-commit-msg" "prepare_commit_msg_hook"
+ }
+ 
+-# Adds a git config pattern, ensuring to de-dupe
+ add_config() {
+   local key="$1"; shift
+   local value="$@"
+@@ -231,27 +204,24 @@ add_config() {
+ }
+ 
+ register_aws() {
+-  # Reusable regex patterns
+   local aws="(AWS|aws|Aws)?_?" quote="(\"|')" connect="\s*(:|=>|=)\s*"
+   local opt_quote="${quote}?"
+   add_config 'secrets.providers' 'git secrets --aws-provider'
+   add_config 'secrets.patterns' '(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'
++  add_config 'secrets.patterns' 'ABSK[A-Za-z0-9+/]{109,}=*'
++  add_config 'secrets.patterns' 'bedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29t'
+   add_config 'secrets.patterns' "${opt_quote}${aws}(SECRET|secret|Secret)?_?(ACCESS|access|Access)?_?(KEY|key|Key)${opt_quote}${connect}${opt_quote}[A-Za-z0-9/\+=]{40}${opt_quote}"
+   add_config 'secrets.patterns' "${opt_quote}${aws}(ACCOUNT|account|Account)_?(ID|id|Id)?${opt_quote}${connect}${opt_quote}[0-9]{4}\-?[0-9]{4}\-?[0-9]{4}${opt_quote}"
+   add_config 'secrets.allowed' 'AKIAIOSFODNN7EXAMPLE'
+   add_config 'secrets.allowed' "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+-
+   if [[ $? == 0 ]]; then
+     echo 'OK'
+   fi
+-
+-  exit $?
+ }
+ 
+ aws_provider() {
+   local fi="$1"
+   [ -z "$fi" ] && fi=~/.aws/credentials
+-  # Find keys and ensure that special characters are escaped.
+   if [ -f $fi ]; then
+     awk -F "=" '/aws_access_key_id|aws_secret_access_key/ {print $2}' $fi \
+       | tr -d ' "' \
+@@ -259,7 +229,6 @@ aws_provider() {
+   fi
+ }
+ 
+-# Ensures that the command is what was expected for an option.
+ assert_option_for_command() {
+   local expected_command="$1"
+   local option_name="$2"
+@@ -271,50 +240,26 @@ assert_option_for_command() {
+ declare COMMAND="$1" FORCE=0 RECURSIVE=0 LITERAL=0 GLOBAL=0 ALLOWED=0
+ declare SCAN_CACHED=0 SCAN_NO_INDEX=0 SCAN_UNTRACKED=0
+ 
+-# Shift off the command name
+ shift 1
+ while [ "$#" -ne 0 ]; do
+   case "$1" in
+-    -f)
+-      assert_option_for_command "--install" "-f|--force"
+-      FORCE=1
+-      ;;
+-    -r)
+-      assert_option_for_command "--scan" "-r|--recursive"
+-      RECURSIVE=1
+-      ;;
+-    -a)
+-      assert_option_for_command "--add" "-a|--allowed"
+-      ALLOWED=1
+-      ;;
+-    -l)
+-      assert_option_for_command "--add" "-l|--literal"
+-      LITERAL=1
+-      ;;
+-    --cached)
+-      assert_option_for_command "--scan" "--cached"
+-      SCAN_CACHED=1
+-      ;;
+-    --no-index)
+-      assert_option_for_command "--scan" "--no-index"
+-      SCAN_NO_INDEX=1
+-      ;;
+-    --untracked)
+-      assert_option_for_command "--scan" "--untracked"
+-      SCAN_UNTRACKED=1
+-      ;;
++    -f) assert_option_for_command "--install" "-f|--force"; FORCE=1 ;;
++    -r) assert_option_for_command "--scan" "-r|--recursive"; RECURSIVE=1 ;;
++    -a) assert_option_for_command "--add" "-a|--allowed"; ALLOWED=1 ;;
++    -l) assert_option_for_command "--add" "-l|--literal"; LITERAL=1 ;;
++    --cached) assert_option_for_command "--scan" "--cached"; SCAN_CACHED=1 ;;
++    --no-index) assert_option_for_command "--scan" "--no-index"; SCAN_NO_INDEX=1 ;;
++    --untracked) assert_option_for_command "--scan" "--untracked"; SCAN_UNTRACKED=1 ;;
+     --global) GLOBAL=1 ;;
+     --) shift; break ;;
+   esac
+   shift
+ done
+ 
+-# Ensure that recursive is not applied with mutually exclusive options.
+ if [ ${RECURSIVE} -eq 1 ]; then
+-  if [ ${SCAN_CACHED} -eq 1  ] \
++  if [ ${SCAN_CACHED} -eq 1 ] \
+       || [ ${SCAN_NO_INDEX} -eq 1 ] \
+-      || [ ${SCAN_UNTRACKED} -eq 1 ];
+-  then
++      || [ ${SCAN_UNTRACKED} -eq 1 ]; then
+     die "-r|--recursive cannot be supplied with --cached, --no-index, or --untracked"
+   fi
+ fi
+@@ -325,8 +270,7 @@ case "${COMMAND}" in
+   --register-aws) register_aws ;;
+   --aws-provider) aws_provider "$1" ;;
+   --commit_msg_hook|--pre_commit_hook|--prepare_commit_msg_hook)
+-    ${COMMAND:2} "$@"
+-    ;;
++    ${COMMAND:2} "$@" ;;
+   --add)
+     if [ ${ALLOWED} -eq 1 ]; then
+       add_config "secrets.allowed" "$1"
+diff --git a/test/test_helper.bash b/test/test_helper.bash
+index 9133e51..271221c 100644
+--- a/test/test_helper.bash
++++ b/test/test_helper.bash
+@@ -1,14 +1,24 @@
+-#!/bin/bash
++#!/usr/bin/env bash
+ export TEST_REPO="$BATS_TMPDIR/test-repo"
+ export TEMP_HOME="$BATS_TMPDIR/home"
+ export TEMPLATE_DIR="${BATS_TMPDIR}/template"
+ INITIAL_PATH="${PATH}"
+ INITIAL_HOME=${HOME}
+ 
++# z/OS safe recursive remove: only runs if directory exists.
++# Avoids rm -rf which z/OS does not support as a combined flag.
++zos_rmdir() {
++  local dir="$1"
++  [ -d "$dir" ] || return 0
++  find "$dir" -depth -type f -exec rm -f {} \; 2>/dev/null || true
++  find "$dir" -depth -type l -exec rm -f {} \; 2>/dev/null || true
++  find "$dir" -depth -type d -exec rmdir {} \; 2>/dev/null || true
++}
++
+ setup() {
+   setup_repo
+-  [ -d "${TEMPLATE_DIR}" ] && rm -rf "${TEMPLATE_DIR}"
+-  [ -d "${TEMP_HOME}" ] && rm -rf "${TEMP_HOME}"
++  zos_rmdir "${TEMPLATE_DIR}"
++  zos_rmdir "${TEMP_HOME}"
+   mkdir -p $TEMP_HOME
+   export HOME=$TEMP_HOME
+   export PATH="${BATS_TEST_DIRNAME}/..:${INITIAL_PATH}"
+@@ -19,18 +29,18 @@ teardown() {
+   delete_repo
+   export PATH="${INITIAL_PATH}"
+   export HOME="${INITIAL_HOME}"
+-  [ -d "${TEMP_HOME}" ] && rm -rf "${TEMP_HOME}"
++  zos_rmdir "${TEMP_HOME}"
+ }
+ 
+ delete_repo() {
+-  [ -d $TEST_REPO ] && rm -rf $TEST_REPO || true
++  zos_rmdir "$TEST_REPO"
+ }
+ 
+ setup_repo() {
+   delete_repo
+   mkdir -p $TEST_REPO
+   cd $TEST_REPO
+-  git init
++  git init --initial-branch=master
+   git config --local --add secrets.patterns '@todo'
+   git config --local --add secrets.patterns 'forbidden|me'
+   git config --local --add secrets.patterns '#hash'
+@@ -47,7 +57,6 @@ repo_run() {
+   cd -
+ }
+ 
+-# Creates a repo that should fail
+ setup_bad_repo() {
+   cd $TEST_REPO
+   echo '@todo more stuff' > $TEST_REPO/data.txt
+@@ -58,7 +67,6 @@ setup_bad_repo() {
+   cd -
+ }
+ 
+-# Creates a repo that should fail
+ setup_bad_repo_with_spaces() {
+   cd $TEST_REPO
+   echo '@todo more stuff' > "$TEST_REPO/da ta.txt"
+@@ -66,7 +74,6 @@ setup_bad_repo_with_spaces() {
+   cd -
+ }
+ 
+-# Creates a repo that should fail
+ setup_bad_repo_with_hash() {
+   cd $TEST_REPO
+   echo '#hash' > "$TEST_REPO/data.txt"
+@@ -74,7 +81,6 @@ setup_bad_repo_with_hash() {
+   cd -
+ }
+ 
+-# Creates a repo that should fail
+ setup_bad_repo_history() {
+   cd $TEST_REPO
+   echo '@todo' > $TEST_REPO/history_failure.txt
+@@ -85,7 +91,6 @@ setup_bad_repo_history() {
+   cd -
+ }
+ 
+-# Creates a repo that does not fail
+ setup_good_repo() {
+   cd $TEST_REPO
+   echo 'hello!' > $TEST_REPO/data.txt
