@@ -1,5 +1,5 @@
-# bump: git-secrets-version /GIT-SECRETS_VERSION="(.*)"/ https://github.com/awslabs/git-secrets/releases/tag/1.3.0|semver:*
-# GIT-SECRETS_VERSION="V.R.M"
+# bump: git-secrets-version /GIT-SECRETS_VERSION="(.*)"/ https://github.com/awslabs/git-secrets/tags|semver:*
+GIT_SECRETS_VERSION="1.3.0"
 
 ###
 ### Build control file for the git-secrets port
@@ -10,7 +10,7 @@
 ###
 export ZOPEN_PROJECT_NAME="git-secrets"
 export ZOPEN_BUILD_LINE="STABLE"
-export ZOPEN_STABLE_URL="https://github.com/awslabs/git-secrets/archive/refs/tags/1.3.0.tar.gz"
+export ZOPEN_STABLE_URL="https://github.com/awslabs/git-secrets/archive/refs/tags/${GIT_SECRETS_VERSION}.tar.gz"
 export ZOPEN_STABLE_DEPS="make bash git curl coreutils grep"
 export ZOPEN_DEV_URL="https://github.com/awslabs/git-secrets.git"
 export ZOPEN_DEV_DEPS="make bash git curl"
@@ -23,7 +23,7 @@ export ZOPEN_RUNTIME_DEPS="git bash"
 export ZOPEN_CONFIGURE="skip"
 
 # No compilation needed — pure shell script, skip the build phase
-export ZOPEN_BUILD="skip"
+export ZOPEN_MAKE="skip"
 
 # Install directly via make, pointing PREFIX at zopen's managed directory
 export ZOPEN_INSTALL="make"
@@ -31,7 +31,11 @@ export ZOPEN_INSTALL_OPTS="install PREFIX=\${ZOPEN_INSTALL_DIR}"
 
 # The Makefile has no 'check' target — correct target is 'test' (needs bats)
 # Skip for now until bats port is available
-export ZOPEN_CHECK_OPTS="bats"
+export ZOPEN_CHECK_OPTS="test"
+export ZOPEN_CONFIGURE_MINIMAL="y"
+export ZOPEN_MAKE_MINIMAL="y"
+export ZOPEN_CHECK_MINIMAL="y"
+export ZOPEN_INSTALL_MINIMAL="y"
 
 ###
 ### Build settings (Port type: BUILD, Build system: GNU Make)
